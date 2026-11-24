@@ -1,0 +1,73 @@
+name: Publish SochnyPrint cards
+on:
+  workflow_dispatch:
+    inputs:
+      import_from_render:
+        description: 'Import original HTML from Render (enable for the first run only)'
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+    paths: ['site/**']
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+concurrency:
+  group: sochnyprint-pages
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Import original HTML from Render
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.import_from_render }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TMP=$(mktemp -d)
+          for page in "" kasimovskaya esenina sheremetyevskaya globus; do
+            mkdir -p "$TMP/$page"
+            curl --fail --location --retry 3 --max-time 90 "https://sochnyprint-cards.onrender.com/$page" -o "$TMP/$page/index.html"
+            grep -Eiq '<html|<!doctype html' "$TMP/$page/index.html"
+          done
+          python3 - "$TMP" <<'PY'
+          import pathlib, sys, re
+          root = pathlib.Path(sys.argv[1])
+          for f in root.rglob('index.html'):
+              s = f.read_text(encoding='utf-8')
+              assert len(s)>200, f
+              s = re.sub(r'(?i)(href\s*=\s*["\x27])(?:https://sochnyprint-cards\.onrender\.com)?/(kasimovskaya|esenina|sheremetyevskaya|globus)/?(?=["\x27])', r'\1/sochnyprint-cards/\2/', s)
+              s = re.sub(r'(?i)(href\s*=\s*["\x27])(?:https://sochnyprint-cards\.onrender\.com)?/(?=["\x27])', r'\1/sochnyprint-cards/', s)
+              f.write_text(s, encoding='utf-8')
+          PY
+          mkdir -p site
+          cp -a "$TMP/." site/
+          touch site/.nojekyll
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add site
+          if ! git diff --cached --quiet; then
+            git commit -m "Import original SochnyPrint pages from Render"
+            git push origin HEAD:main
+          fi
+      - name: Verify files
+        run: |
+          for p in index.html kasimovskaya/index.html esenina/index.html sheremetyevskaya/index.html globus/index.html; do
+            test -s "site/$p"
+          done
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
